@@ -119,7 +119,15 @@ Define models against the shared `db` from `db.database`:
 ```python
 from datetime import datetime
 
-from duo_orm import DateTime, JSON, PG_ARRAY, String, mapped_column
+from duo_orm import (
+    DateTime,
+    ForeignKey,
+    JSON,
+    PG_ARRAY,
+    String,
+    mapped_column,
+    relationship,
+)
 from db.database import db
 
 
@@ -128,6 +136,11 @@ class User(db.Model):
     email: str
     active: bool
     details: dict = mapped_column(JSON, nullable=False)
+    posts = relationship(
+        "Post",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     created_at: datetime = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -142,10 +155,11 @@ class User(db.Model):
 
 class Post(db.Model):
     id: int = mapped_column(primary_key=True)
-    user_id: int
+    user_id: int = mapped_column(ForeignKey("user.id"))
     title: str
     published: bool
     tags: list[str] = mapped_column(PG_ARRAY(String), nullable=False)
+    user = relationship("User", back_populates="posts")
 ```
 
 Then import your model modules from `db/models/__init__.py` so Alembic autogenerate can see them:
@@ -160,6 +174,120 @@ Notes:
 - plain Python annotations are the default
 - use `mapped_column(...)` when you need explicit SQL details
 - reserved SQLAlchemy declarative names such as `metadata` are rejected on purpose
+- `relationship(...)` and `ForeignKey(...)` are thin SQLAlchemy re-exports from `duo_orm`
+- relationship loading and cascade semantics come from SQLAlchemy; Duo-ORM provides the session/runtime bridge around them
+
+
+## Associations
+
+The recommended approach is:
+
+- define associations with SQLAlchemy-backed `relationship(...)`
+- use instance-side relationship access only inside `db.transaction()` / `db.atransaction()` or a direct standalone session
+- keep filtering, joins, ordering, and pagination on the model-rooted query builder
+
+`1:M` example:
+
+```python
+from duo_orm import ForeignKey, relationship, mapped_column
+from db.database import db
+
+
+class User(db.Model):
+    id: int = mapped_column(primary_key=True)
+    email: str
+    posts = relationship("Post", back_populates="user")
+
+
+class Post(db.Model):
+    id: int = mapped_column(primary_key=True)
+    user_id: int = mapped_column(ForeignKey("user.id"))
+    title: str
+    user = relationship("User", back_populates="posts")
+```
+
+`M:M` example:
+
+```python
+from sqlalchemy import Table
+
+from duo_orm import ForeignKey, relationship, mapped_column
+from db.database import db
+
+
+user_roles = Table(
+    "user_roles",
+    db.Model.metadata,
+    mapped_column("user_id", ForeignKey("user.id"), primary_key=True),
+    mapped_column("role_id", ForeignKey("role.id"), primary_key=True),
+)
+
+
+class User(db.Model):
+    id: int = mapped_column(primary_key=True)
+    email: str
+    roles = relationship("Role", secondary=user_roles, back_populates="users")
+
+
+class Role(db.Model):
+    id: int = mapped_column(primary_key=True)
+    name: str
+    users = relationship("User", secondary=user_roles, back_populates="roles")
+```
+
+Read-side association access belongs inside a live transaction scope:
+
+```python
+with db.transaction():
+    user = User.get(1)
+    posts = user.posts
+```
+
+Async:
+
+```python
+async with db.atransaction():
+    user = await User.aget(1)
+    posts = user.posts
+```
+
+Outside transaction scope, Duo-ORM may return detached instances, so plain `user.posts` is not guaranteed to work. If you want direct SQLAlchemy control instead of `db.transaction()`, use a naked standalone session:
+
+```python
+session = db.standalone_session()
+try:
+    user = session.get(User, 1)
+    posts = user.posts
+finally:
+    session.close()
+```
+
+Important boundary:
+
+- `user.posts` is relationship navigation, not a second query builder
+- do not expect `user.posts.where(...)`, `user.posts.limit(...)`, or `user.posts.paginate(...)`
+- for large collections or filtered child queries, use the normal query builder:
+
+```python
+posts = (
+    Post.where(Post.user_id == user.id, Post.published == True)
+    .order_by("-id")
+    .limit(100)
+    .exec()
+)
+```
+
+Joins also stay query-shaped, not association-shaped:
+
+```python
+users = (
+    User.join(Post, on=Post.user_id == User.id, kind="inner")
+    .where(Post.published == True)
+    .exec()
+)
+```
+
+That returns `User` instances only. It does not auto-populate `user.posts`.
 
 
 ## Run Migrations
@@ -263,6 +391,33 @@ user.delete()
 await user.adelete()
 ```
 
+Instance methods are the SQLAlchemy bridge for relationship-aware writes. If your models define SQLAlchemy cascades such as `relationship(..., cascade="all, delete-orphan")`, instance-oriented methods like:
+
+- `create()` / `acreate()`
+- `save()` / `asave()`
+- `update()` / `aupdate()`
+- `delete()` / `adelete()`
+
+can participate in that behavior without requiring an outer transaction block.
+
+Example:
+
+```python
+user = User(
+    email="owner@example.com",
+    active=True,
+    details={"status": "active"},
+)
+user.posts = [
+    Post(title="First Post", published=True, tags=["python"]),
+]
+user.save()
+
+user.delete()
+```
+
+If the relationship is configured with SQLAlchemy cascade rules, the instance flow can persist and delete the related graph accordingly.
+
 Bulk insert:
 
 ```python
@@ -286,6 +441,15 @@ User.bulk_insert([
 - list of dictionaries only
 - no relationship orchestration
 - no implicit timestamp hooks
+
+The same lean rule applies to set-based query mutations:
+
+```python
+updated = User.where(User.active == False).update(active=True)
+deleted = User.where(User.active == False).delete()
+```
+
+These are plain root-table SQL operations. They do not trigger ORM cascade semantics even if the model defines SQLAlchemy relationships.
 
 
 ## Query Builder
@@ -453,8 +617,11 @@ Run that through a standalone session:
 ```python
 from db.database import db
 
-with db.standalone_session() as session:
+session = db.standalone_session()
+try:
     rows = session.execute(stmt).all()
+finally:
+    session.close()
 ```
 
 This is the recommended pattern for:
@@ -495,17 +662,23 @@ For direct SQLAlchemy session control:
 from duo_orm import select
 from db.database import db
 
-with db.standalone_session() as session:
+session = db.standalone_session()
+try:
     stmt = select(User).where(User.active == True)
     users = session.execute(stmt).scalars().all()
+finally:
+    session.close()
 ```
 
 Async:
 
 ```python
-async with db.astandalone_session() as session:
+session = db.astandalone_session()
+try:
     stmt = select(User).where(User.active == True)
     users = (await session.execute(stmt)).scalars().all()
+finally:
+    await session.close()
 ```
 
 
