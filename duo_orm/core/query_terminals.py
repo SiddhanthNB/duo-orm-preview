@@ -95,47 +95,89 @@ def exec_query(builder: Any) -> list[Any]:
     """Execute the query synchronously."""
 
     statement = build_select_statement(builder)
-    with builder.database.standalone_session() as session:
+    session = builder.database._current_sync_session()
+    if session is not None:
         result = session.execute(statement)
         scalars = result.scalars()
         if builder.has_join:
             scalars = scalars.unique()
         return list(scalars.all())
 
+    session = builder.database.standalone_session()
+    try:
+        result = session.execute(statement)
+        scalars = result.scalars()
+        if builder.has_join:
+            scalars = scalars.unique()
+        return list(scalars.all())
+    finally:
+        session.close()
+
 
 async def aexec_query(builder: Any) -> list[Any]:
     """Execute the query asynchronously."""
 
     statement = build_select_statement(builder)
-    async with builder.database.astandalone_session() as session:
+    session = builder.database._current_async_session()
+    if session is not None:
         result = await session.execute(statement)
         scalars = result.scalars()
         if builder.has_join:
             scalars = scalars.unique()
         return list(scalars.all())
 
+    session = builder.database.astandalone_session()
+    try:
+        result = await session.execute(statement)
+        scalars = result.scalars()
+        if builder.has_join:
+            scalars = scalars.unique()
+        return list(scalars.all())
+    finally:
+        await session.close()
+
 
 def count_query(builder: Any) -> int:
     """Count root rows synchronously."""
 
     statement = build_count_statement(builder)
-    with builder.database.standalone_session() as session:
+    session = builder.database._current_sync_session()
+    if session is not None:
         return int(session.execute(statement).scalar_one())
+
+    session = builder.database.standalone_session()
+    try:
+        return int(session.execute(statement).scalar_one())
+    finally:
+        session.close()
 
 
 async def acount_query(builder: Any) -> int:
     """Count root rows asynchronously."""
 
     statement = build_count_statement(builder)
-    async with builder.database.astandalone_session() as session:
+    session = builder.database._current_async_session()
+    if session is not None:
         result = await session.execute(statement)
         return int(result.scalar_one())
+
+    session = builder.database.astandalone_session()
+    try:
+        result = await session.execute(statement)
+        return int(result.scalar_one())
+    finally:
+        await session.close()
 
 
 def update_query(builder: Any, **fields: Any) -> int:
     """Execute a set-based update synchronously."""
 
     statement = build_update_statement(builder, **fields)
+    session = builder.database._current_sync_session()
+    if session is not None:
+        result = session.execute(statement)
+        return result.rowcount or 0
+
     with builder.database.transaction() as session:
         result = session.execute(statement)
         return result.rowcount or 0
@@ -145,6 +187,11 @@ async def aupdate_query(builder: Any, **fields: Any) -> int:
     """Execute a set-based update asynchronously."""
 
     statement = build_update_statement(builder, **fields)
+    session = builder.database._current_async_session()
+    if session is not None:
+        result = await session.execute(statement)
+        return result.rowcount or 0
+
     async with builder.database.atransaction() as session:
         result = await session.execute(statement)
         return result.rowcount or 0
@@ -154,6 +201,11 @@ def delete_query(builder: Any) -> int:
     """Execute a set-based delete synchronously."""
 
     statement = build_delete_statement(builder)
+    session = builder.database._current_sync_session()
+    if session is not None:
+        result = session.execute(statement)
+        return result.rowcount or 0
+
     with builder.database.transaction() as session:
         result = session.execute(statement)
         return result.rowcount or 0
@@ -163,6 +215,11 @@ async def adelete_query(builder: Any) -> int:
     """Execute a set-based delete asynchronously."""
 
     statement = build_delete_statement(builder)
+    session = builder.database._current_async_session()
+    if session is not None:
+        result = await session.execute(statement)
+        return result.rowcount or 0
+
     async with builder.database.atransaction() as session:
         result = await session.execute(statement)
         return result.rowcount or 0

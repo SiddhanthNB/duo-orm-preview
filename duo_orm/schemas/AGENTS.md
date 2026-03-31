@@ -19,7 +19,7 @@ It should stay:
 
 Pydantic v2+ is the supported schema runtime.
 Do not carry compatibility branches for Pydantic v1 or parallel schema systems.
-When this package is enabled, keep the dependency expectation aligned with `pydantic==2.12.5`.
+When this package is enabled, keep the dependency expectation aligned with `pydanticV2 (>=2.0)`.
 
 
 ## Change Workflow

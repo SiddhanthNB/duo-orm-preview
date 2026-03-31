@@ -37,9 +37,40 @@ Adapting arbitrary existing Alembic repositories is out of scope for this layer.
 
 Scaffold and configuration rules:
 
-- `duo-orm init` must create `pyproject.toml` when needed and populate `[tool.duo-orm]`.
-- `[tool.duo-orm]` must remain the source of project migration settings such as `project_name` and `db_dir`.
-- `project_name` is used to derive a stable project-specific Alembic version table name.
+- `duo-orm init` must create a real PEP 621-style `pyproject.toml` when needed, not just a narrow tool stub.
+- A newly scaffolded `pyproject.toml` should include at least:
+
+```toml
+[project]
+name = "my-cool-project"
+version = "0.1.0"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = []
+
+[tool.duo-orm]
+db_dir = "."
+```
+
+- When `pyproject.toml` already exists, the CLI should update Duo-ORM-owned sections without pretending to own unrelated project metadata.
+- `[project].name` is the authoritative project identity and should follow an `uv init`-style generation rule:
+  - derive from the target or current directory name by default
+  - normalize to a packaging-friendly kebab-case value for fresh scaffolds
+  - allow `--name` to override the source project name during `duo-orm init`
+- Do not duplicate `project_name` under `[tool.duo-orm]`.
+- `[tool.duo-orm]` should remain the source of Duo-ORM-wide settings such as `db_dir`.
+- Migration-specific overrides should live under a nested section:
+
+```toml
+[tool.duo-orm.migration]
+version_table = "my_custom_migrations"
+```
+
+- `version_table` under `[tool.duo-orm.migration]` takes precedence if present.
+- If no explicit `version_table` is configured, derive the Alembic version table from `[project].name` by converting it to a lowercase snake-case identifier and appending `_migrations`.
+- The version-table derivation rule should stay explicit and predictable. For example:
+  - `[project].name = "my-cool-project"` -> `my_cool_project_migrations`
+  - `[project].name = "CamelCase"` -> `camel_case_migrations`
 - The scaffolded `db/` tree should be a real Python package layout with `__init__.py` files.
 - `db/database.py` is mandatory and defines the authoritative shared `Database` instance.
 - `db/models/__init__.py` is the explicit model import point for migration discovery.
@@ -58,12 +89,46 @@ CLI rules:
 
 - Keep the surface intentionally small:
   - `duo-orm init`
-  - `duo-orm migration create "message"`
-  - `duo-orm migration upgrade`
-  - `duo-orm migration downgrade`
-  - `duo-orm migration history`
+  - `duo-orm migration.create "message"`
+  - `duo-orm migration.upgrade`
+  - `duo-orm migration.downgrade`
+  - `duo-orm migration.history`
+- Treat the dotted migration commands as the canonical Invoke-style CLI surface.
+- Do not keep the old `duo-orm migration create` compatibility form in the long-term contract once the migration to dotted names is complete.
 - The CLI should derive `alembic.ini` from `db_dir` and fail clearly when the project is not initialized.
 - Advanced workflows should remain possible through direct Alembic usage against the generated `alembic.ini`.
+
+Scaffold examples should stay concrete:
+
+```bash
+duo-orm init
+duo-orm init --db-dir src --name MyCoolProject
+duo-orm migration.create "initial_schema"
+duo-orm migration.upgrade
+duo-orm migration.history
+duo-orm migration.downgrade
+```
+
+and a fresh scaffold with `--name MyCoolProject` should produce a `pyproject.toml` shaped like:
+
+```toml
+[project]
+name = "my-cool-project"
+version = "0.1.0"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = []
+
+[tool.duo-orm]
+db_dir = "."
+```
+
+If the user later wants a custom migration version table, they should edit:
+
+```toml
+[tool.duo-orm.migration]
+version_table = "custom_version_table"
+```
 
 
 ## Validation Standard
@@ -76,7 +141,12 @@ Changes in `migrations/` should usually update and run:
 Minimum verification expectations:
 
 - exact file-content assertions for generated `database.py`, `env.py`, and package scaffolding
-- CLI argument normalization and config loading tests
+- CLI argument and dotted-task entry-point tests
+- config loading tests for:
+  - `[project].name`
+  - `[tool.duo-orm].db_dir`
+  - `[tool.duo-orm.migration].version_table`
+- derivation tests for the default version table when no explicit migration override is present
 - integration coverage for init, create, upgrade, history, and downgrade when migration behavior changes
 - explicit failure coverage for missing scaffold pieces or broken imports
 - verification that the scaffolded package layout is importable without manual patch-up in tests

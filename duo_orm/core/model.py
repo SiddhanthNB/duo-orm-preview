@@ -8,10 +8,11 @@ from typing import Any, ClassVar, get_origin
 
 from sqlalchemy import insert
 from sqlalchemy import inspect as sqlalchemy_inspect
+from sqlalchemy.orm.exc import DetachedInstanceError
 from sqlalchemy.orm import DeclarativeMeta, Mapped, declarative_base, mapped_column
 from sqlalchemy.orm.properties import MappedColumn
 
-from .exceptions import ReservedModelAttributeError
+from .exceptions import DetachedRelationshipError, ReservedModelAttributeError
 from .query_builder import QueryBuilder
 
 _CAMEL_TO_SNAKE_RE = re.compile(r"(?<!^)(?=[A-Z])")
@@ -70,6 +71,19 @@ class ModelMixin:
     __abstract__ = True
     __bound_database__: ClassVar[Any]
 
+    def __getattribute__(self, name: str) -> Any:
+        try:
+            return super().__getattribute__(name)
+        except DetachedInstanceError as exc:
+            if _is_relationship_name(type(self), name):
+                raise DetachedRelationshipError(
+                    f"Relationship '{name}' cannot be loaded because this "
+                    f"{type(self).__name__} instance is detached. Load the model "
+                    "inside `db.transaction()` / `db.atransaction()`, or use a direct "
+                    "standalone session."
+                ) from exc
+            raise
+
     @classmethod
     def create(cls, **fields: Any) -> Any:
         instance = cls(**fields)
@@ -88,13 +102,27 @@ class ModelMixin:
 
     @classmethod
     def get(cls, pk: Any) -> Any | None:
-        with cls.__bound_database__.standalone_session() as session:
+        session = cls.__bound_database__._current_sync_session()
+        if session is not None:
             return session.get(cls, pk)
+
+        session = cls.__bound_database__.standalone_session()
+        try:
+            return session.get(cls, pk)
+        finally:
+            session.close()
 
     @classmethod
     async def aget(cls, pk: Any) -> Any | None:
-        async with cls.__bound_database__.astandalone_session() as session:
+        session = cls.__bound_database__._current_async_session()
+        if session is not None:
             return await session.get(cls, pk)
+
+        session = cls.__bound_database__.astandalone_session()
+        try:
+            return await session.get(cls, pk)
+        finally:
+            await session.close()
 
     @classmethod
     def where(cls, *predicates: Any) -> QueryBuilder:
@@ -109,31 +137,49 @@ class ModelMixin:
 
     @classmethod
     def bulk_insert(cls, rows: list[dict[str, Any]]) -> int:
+        session = cls.__bound_database__._current_sync_session()
+        if session is not None:
+            result = session.execute(insert(cls.__table__), rows)
+            return result.rowcount or 0
+
         with cls.__bound_database__.transaction() as session:
             result = session.execute(insert(cls.__table__), rows)
             return result.rowcount or 0
 
     @classmethod
     async def abulk_insert(cls, rows: list[dict[str, Any]]) -> int:
+        session = cls.__bound_database__._current_async_session()
+        if session is not None:
+            result = await session.execute(insert(cls.__table__), rows)
+            return result.rowcount or 0
+
         async with cls.__bound_database__.atransaction() as session:
             result = await session.execute(insert(cls.__table__), rows)
             return result.rowcount or 0
 
     def save(self) -> Any:
         _apply_timestamp_hooks(self)
+        session = self.__bound_database__._current_sync_session()
+        if session is not None:
+            managed = _persist_sync(session, self)
+            _copy_model_state(source=managed, target=self)
+            return self
+
         with self.__bound_database__.transaction() as session:
-            managed = session.merge(self)
-            session.flush()
-            session.refresh(managed)
+            managed = _persist_sync(session, self)
             _copy_model_state(source=managed, target=self)
         return self
 
     async def asave(self) -> Any:
         _apply_timestamp_hooks(self)
+        session = self.__bound_database__._current_async_session()
+        if session is not None:
+            managed = await _persist_async(session, self)
+            _copy_model_state(source=managed, target=self)
+            return self
+
         async with self.__bound_database__.atransaction() as session:
-            managed = await session.merge(self)
-            await session.flush()
-            await session.refresh(managed)
+            managed = await _persist_async(session, self)
             _copy_model_state(source=managed, target=self)
         return self
 
@@ -153,11 +199,23 @@ class ModelMixin:
         return apply_schema_to_instance(self, schema_obj)
 
     def delete(self) -> None:
+        session = self.__bound_database__._current_sync_session()
+        if session is not None:
+            managed = session.merge(self)
+            session.delete(managed)
+            return
+
         with self.__bound_database__.transaction() as session:
             managed = session.merge(self)
             session.delete(managed)
 
     async def adelete(self) -> None:
+        session = self.__bound_database__._current_async_session()
+        if session is not None:
+            managed = await session.merge(self)
+            await session.delete(managed)
+            return
+
         async with self.__bound_database__.atransaction() as session:
             managed = await session.merge(self)
             await session.delete(managed)
@@ -171,6 +229,34 @@ class ModelMixin:
 def _copy_model_state(source: Any, target: Any) -> None:
     for column in source.__table__.columns:
         setattr(target, column.key, getattr(source, column.key))
+
+
+def _persist_sync(session: Any, instance: Any) -> Any:
+    state = sqlalchemy_inspect(instance)
+    if state.transient:
+        session.add(instance)
+        session.flush()
+        session.refresh(instance)
+        return instance
+
+    managed = session.merge(instance)
+    session.flush()
+    session.refresh(managed)
+    return managed
+
+
+async def _persist_async(session: Any, instance: Any) -> Any:
+    state = sqlalchemy_inspect(instance)
+    if state.transient:
+        session.add(instance)
+        await session.flush()
+        await session.refresh(instance)
+        return instance
+
+    managed = await session.merge(instance)
+    await session.flush()
+    await session.refresh(managed)
+    return managed
 
 
 def _is_classvar(annotation: Any) -> bool:
@@ -216,3 +302,8 @@ def _normalize_set_on(value: Any) -> set[str]:
     if isinstance(value, str):
         return {value}
     return {str(item) for item in value}
+
+
+def _is_relationship_name(model_cls: type[Any], relationship_name: str) -> bool:
+    mapper = sqlalchemy_inspect(model_cls)
+    return relationship_name in mapper.relationships

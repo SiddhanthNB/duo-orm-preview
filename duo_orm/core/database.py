@@ -10,8 +10,12 @@ from sqlalchemy.sql import Executable
 from .engines import create_async_engine_for_url, create_sync_engine
 from .model import create_model_base
 from .sessions import (
+    ambient_atransaction,
+    ambient_transaction,
     astandalone_session as make_astandalone_session,
     atransaction as make_atransaction,
+    get_current_async_session,
+    get_current_sync_session,
     make_async_session_factory,
     make_sync_session_factory,
     standalone_session as make_standalone_session,
@@ -31,6 +35,7 @@ class Database:
     ) -> None:
         self.url = url
         self.engine_kwargs = dict(engine_kwargs or {})
+        self._session_scope_key = object()
         self.sync_engine = create_sync_engine(url, self.engine_kwargs)
         self.async_engine = (
             create_async_engine_for_url(url, self.engine_kwargs) if derive_async else None
@@ -45,16 +50,29 @@ class Database:
         return make_standalone_session(self._sync_session_factory)
 
     def transaction(self) -> Any:
-        return make_transaction(self._sync_session_factory)
+        return ambient_transaction(self._session_scope_key, self._sync_session_factory)
 
     def astandalone_session(self) -> Any:
         return make_astandalone_session(self._async_session_factory)
 
     def atransaction(self) -> Any:
-        return make_atransaction(self._async_session_factory)
+        return ambient_atransaction(self._session_scope_key, self._async_session_factory)
+
+    def _current_sync_session(self) -> Any:
+        return get_current_sync_session(self._session_scope_key)
+
+    def _current_async_session(self) -> Any:
+        return get_current_async_session(self._session_scope_key)
 
     def execute(self, statement: Executable, params: Mapping[str, Any] | None = None) -> Any:
         """Execute raw SQL or SQLAlchemy statements synchronously."""
+
+        session = self._current_sync_session()
+        if session is not None:
+            result = session.execute(statement, params or {})
+            if result.returns_rows:
+                return list(result.fetchall())
+            return result.rowcount
 
         with self.transaction() as session:
             result = session.execute(statement, params or {})

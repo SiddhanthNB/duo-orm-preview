@@ -9,6 +9,10 @@ class AsyncNotConfiguredError(DuoORMError):
     """Raised when async APIs are used on a sync-only Database."""
 
 
+class NestedTransactionError(DuoORMError):
+    """Raised when nested Duo-ORM transactions are attempted in one context."""
+
+
 class InvalidJoinError(DuoORMError):
     """Raised when a join violates Duo-ORM join rules."""
 
@@ -27,3 +31,7 @@ class UnsupportedExpressionError(DuoORMError):
 
 class ReservedModelAttributeError(DuoORMError):
     """Raised when a model declares a SQLAlchemy-reserved attribute name."""
+
+
+class DetachedRelationshipError(DuoORMError):
+    """Raised when a relationship is accessed on a detached model instance."""

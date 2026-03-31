@@ -77,6 +77,8 @@ Repository-wide rules:
 - schema mapping stays opt-in and must not perform persistence or query work
 - raw SQL, standalone sessions, `.alchemize()`, and direct Alembic usage remain first-class escape hatches
 - secrets and live database URLs belong in environment variables, never in committed docs or source
+- project metadata should follow normal PEP 621 `[project]` conventions when Duo-ORM scaffolds a fresh `pyproject.toml`
+- Duo-ORM-specific persistent config belongs under `[tool.duo-orm]`, with narrower nested sections such as `[tool.duo-orm.migration]` when a subsystem needs its own namespace
 
 Repository-wide design posture:
 
@@ -111,6 +113,7 @@ Expected verification level depends on the change:
 
 When real database behavior matters, prefer the integration suite over mocks.
 When compile-time behavior matters, prefer fast deterministic tests at the top level.
+When CLI structure changes, update both the exact scaffold/config assertions and the real CLI integration flow.
 
 
 ## Out of Scope

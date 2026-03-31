@@ -18,6 +18,7 @@ from db.database import db
 from db.models import Post, User
 from db.schemas.user import User as UserSchemas
 from duo_orm import array, json as json_filter, text
+from duo_orm.core.exceptions import DetachedRelationshipError
 
 user = User.create(
     email="sync@example.com",
@@ -49,6 +50,54 @@ Post.bulk_insert([
         "tags": ["python", "async"],
     }
 ])
+
+with db.transaction() as session:
+    staged = User(
+        email="ambient@example.com",
+        active=True,
+        details={"status": "ambient"},
+    )
+    session.add(staged)
+    session.flush()
+    ambient_count = User.where(User.email == "ambient@example.com").count()
+
+with db.transaction():
+    tx_user = User.get(user.id)
+    live_transaction_post_titles = [post.title for post in tx_user.posts]
+
+detached_user = User.get(user.id)
+try:
+    _ = detached_user.posts
+except DetachedRelationshipError as exc:
+    detached_error_type = type(exc).__name__
+    detached_error_message = str(exc)
+else:
+    detached_error_type = None
+    detached_error_message = None
+
+session = db.standalone_session()
+try:
+    standalone_user = session.get(User, user.id)
+    standalone_post_titles = [post.title for post in standalone_user.posts]
+finally:
+    session.close()
+
+cascade_user = User(
+    email="cascade@example.com",
+    active=True,
+    details={"status": "cascade"},
+)
+cascade_user.posts = [
+    Post(
+        title="Cascade Post",
+        published=False,
+        tags=["cascade"],
+    )
+]
+cascade_user.save()
+cascade_created_posts = Post.where(Post.title == "Cascade Post").count()
+cascade_user.delete()
+cascade_deleted_posts = Post.where(Post.title == "Cascade Post").count()
 
 fetched = User.get(user.id)
 fetched.active = False
@@ -102,9 +151,12 @@ ranked_stmt = (
     .having(func.count(Post.id) >= 2)
 )
 
-with db.standalone_session() as session:
+session = db.standalone_session()
+try:
     ranked_rows = session.execute(ranked_stmt).all()
     direct_count = session.execute(text("SELECT count(*) FROM posts")).scalar_one()
+finally:
+    session.close()
 
 bulk_user_before_set_update = User.where(User.email == "bulk@example.com").exec()[0]
 schema_user_before_delete = User.get(schema_created.id)
@@ -121,6 +173,13 @@ payload = {
     "updated_changed_on_apply_save": updated_after_apply_save != updated_after_save,
     "bulk_insert_left_timestamps_null": schema_user_before_delete.created_at is not None
         and bulk_user_before_set_update.created_at is None,
+    "ambient_count": ambient_count,
+    "live_transaction_post_titles": live_transaction_post_titles,
+    "detached_error_type": detached_error_type,
+    "detached_error_message": detached_error_message,
+    "standalone_post_titles": standalone_post_titles,
+    "cascade_created_posts": cascade_created_posts,
+    "cascade_deleted_posts": cascade_deleted_posts,
     "joined_count": len(joined),
     "json_matches": json_matches,
     "array_matches": array_matches,
@@ -147,6 +206,7 @@ from db.database import db
 from db.models import Post, User
 from db.schemas.user import User as UserSchemas
 from duo_orm import array, json as json_filter
+from duo_orm.core.exceptions import DetachedRelationshipError
 
 
 async def main() -> None:
@@ -154,6 +214,11 @@ async def main() -> None:
         email="async@example.com",
         active=True,
         details={"status": "async", "flags": {"is_beta": True}},
+    )
+    deletable = await User.acreate(
+        email="async-delete@example.com",
+        active=True,
+        details={"status": "delete"},
     )
     await Post.abulk_insert([
         {
@@ -164,11 +229,40 @@ async def main() -> None:
         }
     ])
 
+    async with db.atransaction() as session:
+        staged = User(
+            email="async-ambient@example.com",
+            active=True,
+            details={"status": "async-ambient"},
+        )
+        session.add(staged)
+        await session.flush()
+        ambient_count = await User.where(
+            User.email == "async-ambient@example.com"
+        ).acount()
+
     fetched = await User.aget(user.id)
     fetched.apply_schema(UserSchemas.Update(active=False))
     before_save = fetched.updated_at.isoformat()
     await fetched.asave()
     after_save = fetched.updated_at.isoformat()
+
+    detached = await User.aget(user.id)
+    try:
+        _ = detached.posts
+    except DetachedRelationshipError as exc:
+        detached_error_type = type(exc).__name__
+        detached_error_message = str(exc)
+    else:
+        detached_error_type = None
+        detached_error_message = None
+
+    session = db.astandalone_session()
+    try:
+        standalone_user = await session.get(User, user.id)
+        standalone_posts = await session.run_sync(lambda _: list(standalone_user.posts))
+    finally:
+        await session.close()
 
     rows = await (
         User.where(User.active == False)
@@ -179,17 +273,24 @@ async def main() -> None:
     count = await User.where(
         json_filter(User.details)["flags"]["is_beta"].is_true()
     ).acount()
-    deleted = await User.where(User.email == "async@example.com").adelete()
+    deleted = await User.where(User.email == "async-delete@example.com").adelete()
     remaining = await User.where().acount()
 
-    async with db.astandalone_session() as session:
+    session = db.astandalone_session()
+    try:
         titles = (await session.execute(Post.__table__.select())).all()
+    finally:
+        await session.close()
 
     print(json.dumps({
         "rows": len(rows),
         "count": count,
+        "ambient_count": ambient_count,
         "updated_changed": after_save != before_save,
+        "detached_error_type": detached_error_type,
+        "detached_error_message": detached_error_message,
         "deleted": deleted,
+        "standalone_posts": len(standalone_posts),
         "remaining": remaining,
         "titles": len(titles),
     }))
@@ -204,17 +305,17 @@ class IntegrationAppFlowTests(unittest.TestCase):
         app_ref = None
         with integration_app() as app:
             app_ref = app
-            history = run_cli(app, "migration", "history")
+            history = run_cli(app, "migration.history")
             self.assertIn("initial_schema", history.stdout + history.stderr)
 
             self.assertTrue({"users", "posts"}.issubset(set(list_schema_tables(app))))
 
-            run_cli(app, "migration", "downgrade")
+            run_cli(app, "migration.downgrade")
             downgraded_tables = set(list_schema_tables(app))
             self.assertNotIn("users", downgraded_tables)
             self.assertNotIn("posts", downgraded_tables)
 
-            run_cli(app, "migration", "upgrade")
+            run_cli(app, "migration.upgrade")
             self.assertTrue({"users", "posts"}.issubset(set(list_schema_tables(app))))
 
             payload = run_python_json(app, SYNC_APP_FLOW_SCRIPT)
@@ -224,6 +325,14 @@ class IntegrationAppFlowTests(unittest.TestCase):
             self.assertTrue(payload["apply_schema_did_not_persist"])
             self.assertTrue(payload["updated_changed_on_apply_save"])
             self.assertTrue(payload["bulk_insert_left_timestamps_null"])
+            self.assertEqual(payload["ambient_count"], 1)
+            self.assertEqual(payload["live_transaction_post_titles"], ["First Post", "Second Post"])
+            self.assertEqual(payload["detached_error_type"], "DetachedRelationshipError")
+            self.assertIn("Relationship 'posts' cannot be loaded", payload["detached_error_message"])
+            self.assertIn("direct standalone session", payload["detached_error_message"])
+            self.assertEqual(payload["standalone_post_titles"], ["First Post", "Second Post"])
+            self.assertEqual(payload["cascade_created_posts"], 1)
+            self.assertEqual(payload["cascade_deleted_posts"], 0)
             self.assertEqual(payload["joined_count"], 1)
             self.assertEqual(payload["json_matches"], 1)
             self.assertEqual(payload["array_matches"], 1)
@@ -234,7 +343,7 @@ class IntegrationAppFlowTests(unittest.TestCase):
             self.assertEqual(payload["count_before_set_update"], 2)
             self.assertEqual(payload["updated_rows"], 1)
             self.assertEqual(payload["deleted_rows"], 1)
-            self.assertEqual(payload["count_after_delete"], 2)
+            self.assertEqual(payload["count_after_delete"], 3)
             self.assertTrue(payload["query_update_did_not_touch_updated_at"])
             self.assertTrue(payload["post_created_at_set"])
 
@@ -249,7 +358,12 @@ class IntegrationAsyncFlowTests(unittest.IsolatedAsyncioTestCase):
             payload = run_python_json(app, ASYNC_APP_FLOW_SCRIPT)
             self.assertEqual(payload["rows"], 1)
             self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["ambient_count"], 1)
             self.assertTrue(payload["updated_changed"])
+            self.assertEqual(payload["detached_error_type"], "DetachedRelationshipError")
+            self.assertIn("Relationship 'posts' cannot be loaded", payload["detached_error_message"])
+            self.assertIn("direct standalone session", payload["detached_error_message"])
             self.assertEqual(payload["deleted"], 1)
-            self.assertEqual(payload["remaining"], 0)
+            self.assertEqual(payload["standalone_posts"], 1)
+            self.assertEqual(payload["remaining"], 2)
             self.assertEqual(payload["titles"], 1)

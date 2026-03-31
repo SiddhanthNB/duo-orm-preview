@@ -51,13 +51,10 @@ def customize_alembic_ini(alembic_ini_path: Path) -> None:
 def customize_env_py(
     env_py_path: Path,
     *,
-    project_name: str,
     db_dir: str,
 ) -> None:
-    version_table = f"{project_name}_migrations"
     env_py_path.write_text(
         ENV_TEMPLATE.format(
-            version_table=version_table,
             db_dir=db_dir,
             db_dir_depth=len(Path(db_dir).parts),
         ),

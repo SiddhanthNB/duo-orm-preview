@@ -2,13 +2,38 @@ from __future__ import annotations
 
 import unittest
 
-from sqlalchemy import func, update
+import sqlalchemy
+from sqlalchemy import ForeignKey as SAForeignKey
+from sqlalchemy import func, table as sa_table, update
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import JSON as SAPGJSON
+from sqlalchemy.dialects.postgresql import JSONB as SAPGJSONB
+from sqlalchemy.dialects.postgresql import UUID as SAPGUUID
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import relationship as sa_relationship
+from sqlalchemy.orm import Session
 
-from duo_orm import Database, JSON, PG_ARRAY, String, array, json, mapped_column
+from duo_orm import (
+    Database,
+    ForeignKey,
+    JSON,
+    PG_ARRAY,
+    PG_JSON,
+    PG_JSONB,
+    PG_UUID,
+    String,
+    array,
+    func as duo_func,
+    json,
+    mapped_column,
+    relationship,
+    table,
+)
 from duo_orm.core.exceptions import (
     AsyncNotConfiguredError,
+    DetachedRelationshipError,
     InvalidJoinError,
+    NestedTransactionError,
     PaginationJoinError,
     QueryScopeError,
     ReservedModelAttributeError,
@@ -56,6 +81,24 @@ class DatabaseTests(unittest.TestCase):
         self.assertIsNot(User.__table__.metadata, AnalyticsUser.__table__.metadata)
         self.assertIs(User.__bound_database__, primary)
         self.assertIs(AnalyticsUser.__bound_database__, analytics)
+
+    def test_public_re_exports_include_documented_sqlalchemy_helpers(self) -> None:
+        self.assertIs(ForeignKey, SAForeignKey)
+        self.assertIs(relationship, sa_relationship)
+        self.assertIs(duo_func, sqlalchemy.func)
+        self.assertIs(table, sa_table)
+        self.assertIs(PG_JSON, SAPGJSON)
+        self.assertIs(PG_JSONB, SAPGJSONB)
+        self.assertIs(PG_UUID, SAPGUUID)
+
+    def test_standalone_session_returns_raw_session(self) -> None:
+        db = Database("postgresql://user:pass@localhost/test", derive_async=False)
+
+        session = db.standalone_session()
+        try:
+            self.assertIsInstance(session, Session)
+        finally:
+            session.close()
 
 
 class ModelMappingTests(unittest.TestCase):
@@ -227,6 +270,33 @@ class AsyncGuardTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(AsyncNotConfiguredError):
             await User.acreate(name="Alice")
+
+    async def test_nested_async_transactions_raise_clear_error(self) -> None:
+        db = Database("postgresql://user:pass@localhost/test")
+
+        with self.assertRaises(NestedTransactionError):
+            async with db.atransaction():
+                async with db.atransaction():
+                    pass
+
+    async def test_astandalone_session_returns_raw_async_session(self) -> None:
+        db = Database("postgresql://user:pass@localhost/test")
+
+        session = db.astandalone_session()
+        try:
+            self.assertIsInstance(session, AsyncSession)
+        finally:
+            await session.close()
+
+
+class TransactionGuardTests(unittest.TestCase):
+    def test_nested_sync_transactions_raise_clear_error(self) -> None:
+        db = Database("postgresql://user:pass@localhost/test", derive_async=False)
+
+        with self.assertRaises(NestedTransactionError):
+            with db.transaction():
+                with db.transaction():
+                    pass
 
 
 if __name__ == "__main__":

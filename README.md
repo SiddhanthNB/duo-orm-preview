@@ -35,13 +35,47 @@ Scaffold the database package and migration environment:
 duo-orm init
 ```
 
-Or choose a different base directory:
+If you want the scaffold under a different base directory:
 
 ```bash
-duo-orm init --db-dir src --project-name my_service
+duo-orm init --db-dir src
 ```
 
-This creates a package layout like:
+If you want to override the generated project name used in `pyproject.toml`:
+
+```bash
+duo-orm init --name MyCoolProject
+```
+
+`duo-orm init` should create a normal PEP 621-style `pyproject.toml` when one does not already exist. A fresh scaffold should look like:
+
+```toml
+[project]
+name = "my-cool-project"
+version = "0.1.0"
+requires-python = ">=3.12"
+readme = "README.md"
+dependencies = []
+
+[tool.duo-orm]
+db_dir = "."
+```
+
+Notes:
+
+- `[project].name` is the authoritative project identity
+- Duo-ORM derives the default Alembic version table from `[project].name`
+- the default derivation is snake-cased and suffixed with `_migrations`
+- if you need to override the Alembic version table, do it in `pyproject.toml`, not with another CLI flag
+
+Example override:
+
+```toml
+[tool.duo-orm.migration]
+version_table = "custom_version_table"
+```
+
+This produces a package layout like:
 
 ```text
 .
@@ -130,29 +164,48 @@ Notes:
 
 ## Run Migrations
 
-Create a migration:
+Migration commands use the Invoke-style dotted namespace:
 
 ```bash
-duo-orm migration create "initial_schema"
+duo-orm migration.create "initial_schema"
+duo-orm migration.upgrade
+duo-orm migration.history
+duo-orm migration.downgrade
 ```
 
-Apply it:
+Create a migration revision:
 
 ```bash
-duo-orm migration upgrade
+duo-orm migration.create "initial_schema"
+```
+
+Apply the latest revision:
+
+```bash
+duo-orm migration.upgrade
 ```
 
 Inspect history:
 
 ```bash
-duo-orm migration history
+duo-orm migration.history
 ```
 
 Roll back one migration:
 
 ```bash
-duo-orm migration downgrade
+duo-orm migration.downgrade
 ```
+
+The version table name follows this precedence:
+
+1. `[tool.duo-orm.migration].version_table` if present
+2. otherwise a derived default from `[project].name`
+
+Examples:
+
+- `[project].name = "my-cool-project"` -> `my_cool_project_migrations`
+- `[project].name = "CamelCase"` -> `camel_case_migrations`
 
 If you need full Alembic control, use the generated config directly:
 

@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import unittest
+import logging
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -16,11 +18,16 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 
 
+LOGGER = logging.getLogger(__name__)
+
 INTEGRATION_DATABASE_URL = os.environ.get("DUO_ORM_TEST_DATABASE_URL")
 if not INTEGRATION_DATABASE_URL:
-    raise RuntimeError(
-        "Integration tests require DUO_ORM_TEST_DATABASE_URL to be set."
+    message = (
+        "Skipping integration tests: DUO_ORM_TEST_DATABASE_URL is not set. "
+        "Set it to run the real PostgreSQL integration suite."
     )
+    LOGGER.warning(message)
+    raise unittest.SkipTest(message)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INTEGRATION_BASE_URL = make_url(INTEGRATION_DATABASE_URL).set(drivername="postgresql")
@@ -31,7 +38,7 @@ SCHEMAS_INIT_TEMPLATE = """from .user import User\n"""
 
 USER_MODEL_TEMPLATE = """from datetime import datetime
 
-from duo_orm import DateTime, JSON, mapped_column
+from duo_orm import DateTime, JSON, mapped_column, relationship
 from db.database import db
 
 
@@ -51,18 +58,19 @@ class User(db.Model):
         nullable=True,
         info={"set_on": {"create", "update"}},
     )
+    posts = relationship("Post", back_populates="user", cascade="all, delete-orphan")
 """
 
 POST_MODEL_TEMPLATE = """from datetime import datetime
 
-from duo_orm import DateTime, PG_ARRAY, String, mapped_column
+from duo_orm import DateTime, ForeignKey, PG_ARRAY, String, mapped_column, relationship
 from db.database import db
 
 
 class Post(db.Model):
     __tablename__ = "posts"
     id: int = mapped_column(primary_key=True)
-    user_id: int
+    user_id: int = mapped_column(ForeignKey("users.id"))
     title: str
     published: bool
     tags: list[str] = mapped_column(PG_ARRAY(String), nullable=False)
@@ -71,6 +79,7 @@ class Post(db.Model):
         nullable=True,
         info={"set_on": "create"},
     )
+    user = relationship("User", back_populates="posts")
 """
 
 USER_SCHEMAS_TEMPLATE = """from pydantic import BaseModel
@@ -133,10 +142,10 @@ def integration_app() -> Iterator[IntegrationApp]:
     try:
         with admin_engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
-        run_cli(app, "init", "--db-dir", "src", "--project-name", schema_name)
+        run_cli(app, "init", "--db-dir", "src", "--name", schema_name)
         write_integration_app_files(app)
-        run_cli(app, "migration", "create", "initial_schema")
-        run_cli(app, "migration", "upgrade")
+        run_cli(app, "migration.create", "initial_schema")
+        run_cli(app, "migration.upgrade")
         yield app
     finally:
         app.cleanup_attempted = True

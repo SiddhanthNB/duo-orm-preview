@@ -5,12 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from duo_orm.migrations.cli import init, normalize_cli_argv
+from duo_orm.migrations.cli import init, main
 from duo_orm.migrations.config import (
+    derive_version_table_name,
     default_project_name,
     get_alembic_ini_path,
+    get_version_table,
     slugify_project_name,
-    write_duo_orm_config,
+    ensure_pyproject,
 )
 from duo_orm.migrations.runner import run_alembic
 
@@ -20,24 +22,42 @@ class DummyContext:
         self.command = command
 
 
+class CaptureProgram:
+    def __init__(self) -> None:
+        self.argv: list[str] | None = None
+
+    def run(self, argv: list[str]) -> None:
+        self.argv = argv
+
+
 class MigrationCliTests(unittest.TestCase):
-    def test_normalize_cli_argv_rewrites_migration_subcommands(self) -> None:
-        self.assertEqual(
-            normalize_cli_argv(["migration", "create", "initial_schema"]),
-            ["migration.create", "initial_schema"],
-        )
-        self.assertEqual(
-            normalize_cli_argv(["migration", "upgrade"]),
-            ["migration.upgrade"],
-        )
-        self.assertEqual(
-            normalize_cli_argv(["init", "--db-dir", "src"]),
-            ["init", "--db-dir", "src"],
-        )
+    def test_main_passes_through_canonical_dotted_cli_shape(self) -> None:
+        import duo_orm.migrations.cli as migration_cli
+
+        capture = CaptureProgram()
+        original = migration_cli.program
+        try:
+            migration_cli.program = capture
+            main(["migration.upgrade"])
+        finally:
+            migration_cli.program = original
+
+        self.assertEqual(capture.argv, ["duo-orm", "migration.upgrade"])
 
     def test_slugify_project_name(self) -> None:
-        self.assertEqual(slugify_project_name("My Cool-App"), "my_cool_app")
-        self.assertEqual(slugify_project_name("!!!"), "duo_orm_app")
+        self.assertEqual(slugify_project_name("My Cool-App"), "my-cool-app")
+        self.assertEqual(slugify_project_name("MyCoolProject"), "my-cool-project")
+        self.assertEqual(slugify_project_name("!!!"), "duo-orm-app")
+
+    def test_derive_version_table_name(self) -> None:
+        self.assertEqual(
+            derive_version_table_name("my-cool-project"),
+            "my_cool_project_migrations",
+        )
+        self.assertEqual(
+            derive_version_table_name("CamelCase"),
+            "camel_case_migrations",
+        )
 
     def test_default_project_name_uses_directory_name(self) -> None:
         with tempfile.TemporaryDirectory(prefix="duo-service-") as tmp:
@@ -46,27 +66,49 @@ class MigrationCliTests(unittest.TestCase):
                 slugify_project_name(Path(tmp).name),
             )
 
-    def test_write_duo_orm_config_creates_section(self) -> None:
+    def test_ensure_pyproject_creates_pep621_project_and_tool_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             pyproject_path = Path(tmp) / "pyproject.toml"
-            pyproject_path.write_text("[project]\nname = \"demo\"\n", encoding="utf-8")
 
-            write_duo_orm_config(
+            ensure_pyproject(
+                project_name="my-cool-project",
                 db_dir="src",
-                project_name="demo_service",
                 pyproject_path=pyproject_path,
             )
 
             content = pyproject_path.read_text(encoding="utf-8")
+            self.assertIn("[project]", content)
+            self.assertIn('name = "my-cool-project"', content)
+            self.assertIn('version = "0.1.0"', content)
+            self.assertIn('requires-python = ">=3.12"', content)
+            self.assertIn('readme = "README.md"', content)
+            self.assertIn("dependencies = []", content)
             self.assertIn("[tool.duo-orm]", content)
-            self.assertIn('project_name = "demo_service"', content)
             self.assertIn('db_dir = "src"', content)
+            self.assertNotIn("project_name =", content)
+
+    def test_get_version_table_prefers_nested_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pyproject_path = Path(tmp) / "pyproject.toml"
+            pyproject_path.write_text(
+                "[project]\n"
+                'name = "demo-service"\n'
+                "\n"
+                "[tool.duo-orm]\n"
+                'db_dir = "src"\n'
+                "\n"
+                "[tool.duo-orm.migration]\n"
+                'version_table = "custom_version_table"\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(get_version_table(pyproject_path), "custom_version_table")
 
     def test_get_alembic_ini_path_uses_tool_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             pyproject_path = Path(tmp) / "pyproject.toml"
             pyproject_path.write_text(
-                "[tool.duo-orm]\nproject_name = \"demo\"\ndb_dir = \"src\"\n",
+                "[project]\nname = \"demo-service\"\n\n[tool.duo-orm]\ndb_dir = \"src\"\n",
                 encoding="utf-8",
             )
 
@@ -80,7 +122,7 @@ class MigrationCliTests(unittest.TestCase):
             workspace = Path(tmp)
             pyproject_path = workspace / "pyproject.toml"
             pyproject_path.write_text(
-                "[tool.duo-orm]\nproject_name = \"demo\"\ndb_dir = \"src\"\n",
+                "[project]\nname = \"demo-service\"\n\n[tool.duo-orm]\ndb_dir = \"src\"\n",
                 encoding="utf-8",
             )
 
@@ -105,12 +147,12 @@ class MigrationCliTests(unittest.TestCase):
                 workspace = Path(tmp)
                 pyproject_path = workspace / "pyproject.toml"
                 pyproject_path.write_text(
-                    "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+                    "[project]\nname = \"demo-service\"\nversion = \"0.1.0\"\n",
                     encoding="utf-8",
                 )
 
                 os.chdir(workspace)
-                init.body(DummyContext(), db_dir="src", project_name="Demo Service")
+                init.body(DummyContext(), db_dir="src", name="MyCoolProject")
             finally:
                 os.chdir(cwd)
 
@@ -135,12 +177,22 @@ class MigrationCliTests(unittest.TestCase):
             schemas_init = (db_dir / "schemas" / "__init__.py").read_text(encoding="utf-8")
             self.assertEqual(schemas_init, '"""Project schema modules live here."""\n')
 
+            pyproject_content = (workspace / "pyproject.toml").read_text(encoding="utf-8")
+            self.assertIn('name = "my-cool-project"', pyproject_content)
+            self.assertIn("[tool.duo-orm]", pyproject_content)
+            self.assertIn('db_dir = "src"', pyproject_content)
+            self.assertNotIn("project_name =", pyproject_content)
+
             env_py = (migrations_dir / "env.py").read_text(encoding="utf-8")
-            self.assertIn("demo_service_migrations", env_py)
             self.assertIn("from db.database import db", env_py)
             self.assertIn("import db.models", env_py)
+            self.assertIn("import re", env_py)
             self.assertIn("target_metadata = getattr(getattr(db, \"Model\", None), \"metadata\", None)", env_py)
             self.assertIn("No models were imported into db.Model.metadata", env_py)
+            self.assertIn("PYPROJECT_CONFIG[\"tool\"][\"duo-orm\"]", env_py)
+            self.assertIn("PYPROJECT_CONFIG[\"project\"][\"name\"]", env_py)
+            self.assertIn("migration_config = DUO_ORM_CONFIG.get(\"migration\", {})", env_py)
+            self.assertIn("version_table=_version_table()", env_py)
             self.assertIn("if str(_DB_DIR_ROOT) not in sys.path:", env_py)
             self.assertNotIn("_iter_model_modules", env_py)
 

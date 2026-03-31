@@ -3,6 +3,7 @@
 ENV_TEMPLATE = """from __future__ import annotations
 
 import os
+import re
 import sys
 import tomllib
 from logging.config import fileConfig
@@ -26,11 +27,16 @@ _PYPROJECT_PATH = _PROJECT_ROOT / "pyproject.toml"
 if str(_DB_DIR_ROOT) not in sys.path:
     sys.path.insert(0, str(_DB_DIR_ROOT))
 
-VERSION_TABLE = {version_table!r}
 EXPECTED_DB_DIR = {db_dir!r}
 
 
-def _load_duo_orm_config() -> dict:
+def _slugify_version_table_source(value: str) -> str:
+    snake_source = re.sub(r"(?<!^)(?=[A-Z])", "_", value.strip())
+    snake = re.sub(r"[^a-zA-Z0-9]+", "_", snake_source).strip("_").lower()
+    return snake or "duo_orm_app"
+
+
+def _load_pyproject() -> dict:
     if not _PYPROJECT_PATH.exists():
         raise RuntimeError(
             "Duo-ORM migrations require pyproject.toml at "
@@ -38,10 +44,15 @@ def _load_duo_orm_config() -> dict:
         )
 
     with _PYPROJECT_PATH.open("rb") as handle:
-        config_data = tomllib.load(handle)
+        return tomllib.load(handle)
 
+
+PYPROJECT_CONFIG = _load_pyproject()
+
+
+def _load_duo_orm_config() -> dict:
     try:
-        return config_data["tool"]["duo-orm"]
+        return PYPROJECT_CONFIG["tool"]["duo-orm"]
     except KeyError as exc:
         raise RuntimeError(
             "Missing [tool.duo-orm] configuration in pyproject.toml. "
@@ -57,6 +68,25 @@ if DUO_ORM_CONFIG.get("db_dir", ".") != EXPECTED_DB_DIR:
         f"Expected db_dir={{EXPECTED_DB_DIR!r}} but found "
         f"{{DUO_ORM_CONFIG.get('db_dir', '.')}}."
     )
+
+
+def _project_name() -> str:
+    try:
+        return str(PYPROJECT_CONFIG["project"]["name"])
+    except KeyError as exc:
+        raise RuntimeError(
+            "Missing [project].name in pyproject.toml. Duo-ORM migrations "
+            "derive the default version table from the project name unless "
+            "[tool.duo-orm.migration].version_table overrides it."
+        ) from exc
+
+
+def _version_table() -> str:
+    migration_config = DUO_ORM_CONFIG.get("migration", {{}})
+    override = migration_config.get("version_table")
+    if override:
+        return str(override)
+    return f"{{_slugify_version_table_source(_project_name())}}_migrations"
 
 
 def _load_database():
@@ -113,7 +143,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={{"paramstyle": "named"}},
-        version_table=VERSION_TABLE,
+        version_table=_version_table(),
         compare_type=True,
     )
 
@@ -126,7 +156,7 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            version_table=VERSION_TABLE,
+            version_table=_version_table(),
             compare_type=True,
         )
 
