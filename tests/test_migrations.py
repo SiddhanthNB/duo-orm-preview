@@ -38,11 +38,11 @@ class MigrationCliTests(unittest.TestCase):
         original = migration_cli.program
         try:
             migration_cli.program = capture
-            main(["migration.upgrade"])
+            main(["migration.current"])
         finally:
             migration_cli.program = original
 
-        self.assertEqual(capture.argv, ["duo-orm", "migration.upgrade"])
+        self.assertEqual(capture.argv, ["duo-orm", "migration.current"])
 
     def test_slugify_project_name(self) -> None:
         self.assertEqual(slugify_project_name("My Cool-App"), "my-cool-app")
@@ -133,12 +133,17 @@ class MigrationCliTests(unittest.TestCase):
             cwd = Path.cwd()
             try:
                 os.chdir(workspace)
-                ctx = DummyContext()
-                run_alembic(ctx, "history")
+                commands = {
+                    "history": "alembic -c src/db/migrations/alembic.ini history",
+                    "current": "alembic -c src/db/migrations/alembic.ini current",
+                    "check": "alembic -c src/db/migrations/alembic.ini check",
+                }
+                for command_name, expected_command in commands.items():
+                    ctx = DummyContext()
+                    run_alembic(ctx, command_name)
+                    self.assertEqual(ctx.command, expected_command)
             finally:
                 os.chdir(cwd)
-
-            self.assertEqual(ctx.command, "alembic -c src/db/migrations/alembic.ini history")
 
     def test_init_scaffolds_expected_layout_and_env_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

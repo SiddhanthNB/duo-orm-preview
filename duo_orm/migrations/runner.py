@@ -32,3 +32,11 @@ def downgrade_migrations(c) -> None:
 
 def migration_history(c) -> None:
     run_alembic(c, "history")
+
+
+def current_migration(c) -> None:
+    run_alembic(c, "current")
+
+
+def check_migrations(c) -> None:
+    run_alembic(c, "check")

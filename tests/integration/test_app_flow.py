@@ -307,6 +307,10 @@ class IntegrationAppFlowTests(unittest.TestCase):
             app_ref = app
             history = run_cli(app, "migration.history")
             self.assertIn("initial_schema", history.stdout + history.stderr)
+            current = run_cli(app, "migration.current")
+            self.assertIn("initial_schema", current.stdout + current.stderr)
+            check = run_cli(app, "migration.check")
+            self.assertEqual(check.stdout.strip(), "")
 
             self.assertTrue({"users", "posts"}.issubset(set(list_schema_tables(app))))
 

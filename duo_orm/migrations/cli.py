@@ -13,7 +13,14 @@ from .config import (
     ensure_pyproject,
     slugify_project_name,
 )
-from .runner import create_migration, downgrade_migrations, migration_history, upgrade_migrations
+from .runner import (
+    check_migrations,
+    create_migration,
+    current_migration,
+    downgrade_migrations,
+    migration_history,
+    upgrade_migrations,
+)
 from .scaffold import customize_alembic_ini, customize_env_py, initialize_alembic_environment, scaffold_layout
 
 
@@ -43,6 +50,20 @@ def history_(c) -> None:
     """Show migration history."""
 
     migration_history(c)
+
+
+@task
+def current(c) -> None:
+    """Show the current migration revision."""
+
+    current_migration(c)
+
+
+@task
+def check(c) -> None:
+    """Check whether autogenerate would detect pending migration changes."""
+
+    check_migrations(c)
 
 
 @task(
@@ -79,6 +100,8 @@ migration.add_task(create)
 migration.add_task(upgrade)
 migration.add_task(downgrade)
 migration.add_task(history_)
+migration.add_task(current)
+migration.add_task(check)
 
 ns = Collection()
 ns.add_task(init)

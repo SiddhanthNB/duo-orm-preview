@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from duo_orm import Database, JSON, mapped_column
+from duo_orm import Database, PG_JSON, mapped_column
 from duo_orm.schemas import SchemaMappingError
 from pydantic import BaseModel
 
@@ -50,7 +50,7 @@ class SchemaBridgeTests(unittest.TestCase):
             name: str
             email: str
             active: bool
-            payload: dict = mapped_column(JSON, nullable=False, default=dict)
+            payload: dict = mapped_column(PG_JSON, nullable=False, default=dict)
 
         self.User = User
 

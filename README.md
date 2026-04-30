@@ -122,8 +122,8 @@ from datetime import datetime
 from duo_orm import (
     DateTime,
     ForeignKey,
-    JSON,
     PG_ARRAY,
+    PG_JSON,
     String,
     mapped_column,
     relationship,
@@ -135,7 +135,7 @@ class User(db.Model):
     id: int = mapped_column(primary_key=True)
     email: str
     active: bool
-    details: dict = mapped_column(JSON, nullable=False)
+    details: dict = mapped_column(PG_JSON, nullable=False)
     posts = relationship(
         "Post",
         back_populates="user",
@@ -298,6 +298,8 @@ Migration commands use the Invoke-style dotted namespace:
 duo-orm migration.create "initial_schema"
 duo-orm migration.upgrade
 duo-orm migration.history
+duo-orm migration.current
+duo-orm migration.check
 duo-orm migration.downgrade
 ```
 
@@ -317,6 +319,18 @@ Inspect history:
 
 ```bash
 duo-orm migration.history
+```
+
+Show the current applied revision:
+
+```bash
+duo-orm migration.current
+```
+
+Check whether model changes would require a new migration:
+
+```bash
+duo-orm migration.check
 ```
 
 Roll back one migration:

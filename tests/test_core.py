@@ -4,30 +4,36 @@ import unittest
 
 import sqlalchemy
 from sqlalchemy import ForeignKey as SAForeignKey
-from sqlalchemy import func, table as sa_table, update
+from sqlalchemy import Float as SAFloat
+from sqlalchemy import func, select as sa_select, table as sa_table, text as sa_text, update
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import ARRAY as SAPGARRAY
 from sqlalchemy.dialects.postgresql import JSON as SAPGJSON
 from sqlalchemy.dialects.postgresql import JSONB as SAPGJSONB
 from sqlalchemy.dialects.postgresql import UUID as SAPGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import mapped_column as sa_mapped_column
 from sqlalchemy.orm import relationship as sa_relationship
 from sqlalchemy.orm import Session
 
 from duo_orm import (
+    Float,
     Database,
     ForeignKey,
-    JSON,
     PG_ARRAY,
     PG_JSON,
     PG_JSONB,
     PG_UUID,
     String,
     array,
+    event,
     func as duo_func,
     json,
     mapped_column,
     relationship,
+    select,
     table,
+    text,
 )
 from duo_orm.core.exceptions import (
     AsyncNotConfiguredError,
@@ -84,9 +90,15 @@ class DatabaseTests(unittest.TestCase):
 
     def test_public_re_exports_include_documented_sqlalchemy_helpers(self) -> None:
         self.assertIs(ForeignKey, SAForeignKey)
+        self.assertIs(Float, SAFloat)
+        self.assertIs(event, sqlalchemy.event)
         self.assertIs(relationship, sa_relationship)
+        self.assertIs(mapped_column, sa_mapped_column)
         self.assertIs(duo_func, sqlalchemy.func)
+        self.assertIs(select, sa_select)
         self.assertIs(table, sa_table)
+        self.assertIs(text, sa_text)
+        self.assertIs(PG_ARRAY, SAPGARRAY)
         self.assertIs(PG_JSON, SAPGJSON)
         self.assertIs(PG_JSONB, SAPGJSONB)
         self.assertIs(PG_UUID, SAPGUUID)
@@ -109,7 +121,7 @@ class ModelMappingTests(unittest.TestCase):
             class Device(db.Model):
                 __tablename__ = "devices"
                 id: int = mapped_column(primary_key=True)
-                metadata: dict = mapped_column(JSON, nullable=False)
+                metadata: dict = mapped_column(PG_JSON, nullable=False)
                 active: bool
 
     def test_plain_annotations_are_supported(self) -> None:
@@ -118,7 +130,7 @@ class ModelMappingTests(unittest.TestCase):
         class Device(db.Model):
             __tablename__ = "devices"
             id: int = mapped_column(primary_key=True)
-            payload: dict = mapped_column(JSON, nullable=False)
+            payload: dict = mapped_column(PG_JSON, nullable=False)
             active: bool
 
         device = Device(payload={"status": "active"}, active=True)
@@ -227,7 +239,7 @@ class ExpressionTests(unittest.TestCase):
         class Device(db.Model):
             __tablename__ = "devices"
             id: int = mapped_column(primary_key=True)
-            payload: dict = mapped_column(JSON, nullable=False)
+            payload: dict = mapped_column(PG_JSON, nullable=False)
 
         class Article(db.Model):
             __tablename__ = "articles"

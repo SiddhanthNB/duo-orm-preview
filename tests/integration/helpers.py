@@ -7,7 +7,6 @@ import sys
 import tempfile
 import textwrap
 import unittest
-import logging
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,16 +16,12 @@ from typing import Iterator
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
 
-
-LOGGER = logging.getLogger(__name__)
-
 INTEGRATION_DATABASE_URL = os.environ.get("DUO_ORM_TEST_DATABASE_URL")
 if not INTEGRATION_DATABASE_URL:
     message = (
         "Skipping integration tests: DUO_ORM_TEST_DATABASE_URL is not set. "
         "Set it to run the real PostgreSQL integration suite."
     )
-    LOGGER.warning(message)
     raise unittest.SkipTest(message)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -38,7 +33,7 @@ SCHEMAS_INIT_TEMPLATE = """from .user import User\n"""
 
 USER_MODEL_TEMPLATE = """from datetime import datetime
 
-from duo_orm import DateTime, JSON, mapped_column, relationship
+from duo_orm import DateTime, PG_JSON, mapped_column, relationship
 from db.database import db
 
 
@@ -47,7 +42,7 @@ class User(db.Model):
     id: int = mapped_column(primary_key=True)
     email: str
     active: bool
-    details: dict = mapped_column(JSON, nullable=False)
+    details: dict = mapped_column(PG_JSON, nullable=False)
     created_at: datetime = mapped_column(
         DateTime(timezone=True),
         nullable=True,

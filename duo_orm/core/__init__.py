@@ -1,6 +1,18 @@
 """Curated public exports for Duo-ORM core."""
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, func, select, table, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    event,
+    func,
+    select,
+    table,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY as PG_ARRAY
 from sqlalchemy.dialects.postgresql import JSON as PG_JSON
 from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
@@ -28,10 +40,10 @@ __all__ = [
     "DateTime",
     "DetachedRelationshipError",
     "DuoORMError",
+    "Float",
     "ForeignKey",
     "Integer",
     "InvalidJoinError",
-    "JSON",
     "NestedTransactionError",
     "PaginationJoinError",
     "PG_ARRAY",
@@ -43,6 +55,7 @@ __all__ = [
     "String",
     "UnsupportedExpressionError",
     "array",
+    "event",
     "func",
     "json",
     "mapped_column",
